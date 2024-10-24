@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoRa APRS Live!</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+
+  <!-- Paho MQTT JavaScript Client -->
+  <script src="https://unpkg.com/paho-mqtt@1.1.0/paho-mqtt-min.js"></script>
+
+  <!-- Include Atkinson Hyperlegible Font -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Atkinson+Hyperlegible&display=swap" />
+
+  <style>
+    /* Global Styles */
+   html, body {
+     height: 100%;
+     margin: 0;
+     padding: 0;
+   }
+   body {
+      margin: 0;
+      font-family: 'Atkinson Hyperlegible', Arial, sans-serif;
+      background-color: #f5f5f5;
+      color: #212121;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Dark Mode Styles */
+    body.dark-mode {
+      background-color: #121212;
+      color: #e0e0e0;
+    }
+
+    /* Map Container */
+    #map {
+      flex: 1 0 auto;
+    }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      background-color: #ffffff;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    body.dark-mode .controls {
+      background-color: #1e1e1e;
+      box-shadow: none;
+    }
+
+    /* Buttons */
+    .btn {
+      padding: 10px 20px;
+      font-size: 16px;
+      border: none;
+      border-radius: 5px;
+      background-color: #1976d2;
+      color: #ffffff;
+      cursor: pointer;
+      transition: background-color 0.3s;
+    }
+
+    .btn:hover {
+      background-color: #1565c0;
+    }
+
+    /* Dropdowns */
+    .dropdowns label {
+      margin-right: 5px;
+    }
+
+    .dropdowns select {
+      padding: 5px 10px;
+      font-size: 14px;
+      border: 1px solid #cccccc;
+      border-radius: 5px;
+      margin-right: 15px;
+      background-color: #ffffff;
+      color: #212121;
+    }
+
+    .dropdowns input[type="checkbox"] {
+      margin-right: 5px;
+    }
+
+    .dropdowns {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      padding: 10px;
+      background-color: #ffffff;
+    }
+
+    body.dark-mode .dropdowns {
+      background-color: #1e1e1e;
+    }
+
+    body.dark-mode .dropdowns select {
+      background-color: #2c2c2c;
+      color: #e0e0e0;
+      border: 1px solid #444444;
+    }
+
+    body.dark-mode .dropdowns label {
+      color: #e0e0e0;
+    }
+
+    /* Marker Labels */
+    .marker-content {
+      position: relative;
+      display: inline-block;
+      width: 1px;
+      height: 1px;
+    }
+
+    .tx-label {
+      position: absolute;
+      left: -10px;
+      top: -26px;
+      font-size: 12px;
+      color: #ffffff;
+      padding: 4px 6px;
+      border-radius: 8px;
+      white-space: nowrap;
+      text-align: center;
+    }
+
+    .highlight {
+      background-color: #4CAF50;
+    }
+
+    .normal {
+      background-color: #FF5722;
+    }
+
+    body.dark-mode .highlight {
+      background-color: #81C784;
+    }
+
+    body.dark-mode .normal {
+      background-color: #FF8A65;
+    }
+
+    /* Flash Message Styling */
+    #flash-message {
+      display: none;
+      color: #4CAF50;
+      font-weight: bold;
+    }
+
+@keyframes ripple {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 87, 34, 0.8);
+    opacity: 1;
+  }
+  70% {
+    box-shadow: 0 0 0 50px rgba(255, 87, 34, 0);
+    opacity: 0.5;
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 87, 34, 0);
+    opacity: 0;
+  }
+}
+
+.ripple-effect {
+  animation: ripple 1.5s ease-out forwards;
+}
+
+    /* Map attribution link colors in dark mode */
+    body.dark-mode .leaflet-control-attribution a {
+      color: #e0e0e0;
+    }
+  </style>
+</head>
+<body>
+<!--
+    <div class="controls">
+    <a href="javascript:history.back()" class="btn">Back</a>
+    <button class="btn" onclick="copyLink()">Link</button>
+    <span id="flash-message">Link copied!</span>
+  </div>
+-->
+  <!-- Dropdown filters -->
+  <div class="dropdowns">
+    <label for="rxFilter">iGate:</label>
+    <select id="rxFilter">
+      <option value="">All</option>
+    </select>
+
+    <label for="txFilter">Tracker:</label>
+    <select id="txFilter">
+      <option value="">All</option>
+    </select>
+
+    <label for="distanceFilter">Within:</label>
+    <select id="distanceFilter">
+      <option value="">All</option>
+      <option value="1">1 km</option>
+      <option value="5">5 km</option>
+      <option value="10">10 km</option>
+      <option value="25">25 km</option>
+      <option value="50">50 km</option>
+      <option value="100">100 km</option>
+      <option value="200">200 km</option>
+      <option value="500">500 km</option>
+    </select>
+
+    <!-- New dropdown for maximum marker age -->
+    <label for="ageFilter">Max age:</label>
+    <select id="ageFilter">
+      <option value="unlimited" selected="">Unlimited</option>
+      <option value="1">1 minute</option>
+      <option value="5">5 minutes</option>
+      <option value="15">15 minutes</option>
+      <option value="30">30 minutes</option>
+      <option value="60">1 hour</option>
+      <option value="180">3 hours</option>
+      <option value="360">6 hours</option>
+      <option value="720">12 hours</option>
+      <option value="1440">1 day</option>
+    </select>
+
+    <!-- Add checkboxes for iGates and Trackers -->
+    <label><input type="checkbox" id="showIgates" checked> Show iGates</label>
+    <label><input type="checkbox" id="showTrackers" checked> Show Trackers</label>
+
+    <!-- Add checkbox for Dark Mode -->
+    <label><input type="checkbox" id="darkModeToggle"> Enable Dark Mode</label>
+  </div>
+
+  <!-- Leaflet map container -->
+  <div id="map"></div>
+
+  <!-- Include Leaflet JavaScript -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <!-- Main JavaScript -->
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {
+      // The getColor function based on signal quality
+      function getColor(signalQuality) {
+        if (signalQuality > -3) {
+          return 'rgb(0, 255, 0)'; // Green
+        } else if (signalQuality > -12 && signalQuality <= -3) {
+          return 'rgb(255, 255, 0)'; // Yellow
+        } else if (signalQuality > -18 && signalQuality <= -12) {
+          return 'rgb(255, 165, 0)'; // Orange
+        } else if (signalQuality <= -18) {
+          return 'rgb(255, 0, 0)'; // Red
+        } else {
+          return 'rgb(128, 128, 128)'; // Grey
+        }
+      }
+
+      // Initialize the Leaflet map
+      var map = L.map('map').setView([54.50, -4.09], 6); // Default view
+
+      // Define tile layers for light and dark modes
+      var lightTileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+      });
+
+      var darkTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap contributors &copy; CartoDB'
+      });
+
+      // Function to switch tile layers based on dark mode checkbox
+      function updateTileLayer() {
+        var isDarkMode = document.getElementById('darkModeToggle').checked;
+        if (isDarkMode) {
+          map.addLayer(darkTileLayer);
+          map.removeLayer(lightTileLayer);
+        } else {
+          map.addLayer(lightTileLayer);
+          map.removeLayer(darkTileLayer);
+        }
+      }
+
+      // Initial tile layer setup
+      updateTileLayer();
+
+      // Event listener for dark mode toggle
+      document.getElementById('darkModeToggle').addEventListener('change', function() {
+        var isDarkMode = this.checked;
+        if (isDarkMode) {
+          document.body.classList.add('dark-mode');
+        } else {
+          document.body.classList.remove('dark-mode');
+        }
+        updateTileLayer();
+      });
+
+      // Store markers and callsigns for filtering
+      var markers = {};
+      var rxCalls = new Set();
+      var txCalls = new Set();
+      var polylines = {}; // Store polylines
+      var userLocation = null;  // Will hold the user's geolocation
+      var userMarker = null;    // Marker for the user's location
+
+      // Initialize user interaction flag
+      var userInteracted = false;
+
+      // Add event listeners to detect manual map interactions
+      map.on('mousedown touchstart wheel', function() {
+        userInteracted = true;
+      });
+
+      // MQTT connection settings
+      var client = new Paho.Client("hydros.link9.net", 8183, "clientId-" + Math.random().toString(16).substr(2, 8));
+
+      // Connect to the MQTT WebSocket server
+      client.connect({
+        useSSL: true,  // Assuming SSL is used
+        onSuccess: onConnect,
+        onFailure: onFailure
+      });
+
+      // Called when the client connects successfully
+      function onConnect() {
+        console.log("Connected to MQTT broker.");
+        client.subscribe("lora_aprs/+/+/json_message");
+      }
+
+      // Called when the client fails to connect
+      function onFailure(error) {
+        console.log("MQTT connection failed: " + error.errorMessage);
+      }
+
+      // Called when a message arrives from the broker
+      client.onMessageArrived = function(message) {
+        var topic = message.destinationName;
+        var payload = message.payloadString;
+
+        try {
+          var data = JSON.parse(payload);
+
+          var topicParts = topic.split('/');
+          var rx_callsign = topicParts[1];
+          var tx_callsign = topicParts[2];
+
+          var latitude = data.latitude;
+          var longitude = data.longitude;
+          var signal_quality = data.signal_quality;
+          var distance = data.distance;
+          var timestamp = data.timestamp;
+          var battery = data.battery;
+          var comment = data.comment;
+
+          rxCalls.add(rx_callsign);
+          txCalls.add(tx_callsign);
+
+          updateDropdowns();
+
+          // Determine if this tx_callsign should be highlighted
+          var isHighlighted = (rx_callsign === tx_callsign);
+          var type = isHighlighted ? 'iGate' : 'Tracker';
+
+          if (latitude && longitude) {
+            // Format the timestamp to the user's local time
+            var localTime = new Date(timestamp).toLocaleString();
+
+            // Prepare popup and tooltip content with formatted local timestamp
+            var popupContent = `Tracker: ${tx_callsign}<br>iGate: ${rx_callsign}<br>Seen: ${localTime}<br>SNR: ${signal_quality} dB<br>${battery !== null ? `Battery: ${battery} V<br>` : ''}Distance: ${distance} km`;
+
+            // Check if marker already exists for this tx_callsign
+            if (markers[tx_callsign]) {
+              // If the marker exists, update its position and label, but retain highlight state
+              var markerData = markers[tx_callsign];
+
+              // Once a marker is highlighted, it should remain highlighted
+              if (isHighlighted || markerData.highlighted) {
+                markerData.highlighted = true;
+                var labelClass = 'highlight'; // Always use highlighted class if previously highlighted
+                markerData.type = 'iGate'; // Update type to iGate
+              } else {
+                var labelClass = 'normal';
+                markerData.type = 'Tracker'; // Update type to Tracker
+              }
+
+              var iconHtml = `
+                <div class="marker-content">
+                  <div class="tx-label ${labelClass}">${tx_callsign}</div>
+                </div>
+              `;
+
+              var txLabelIcon = L.divIcon({
+                html: iconHtml,
+                iconSize: [1, 1],
+                iconAnchor: [0, 0],
+                className: ''
+              });
+
+              markerData.marker.setLatLng([latitude, longitude])
+                .setIcon(txLabelIcon)
+                .bindPopup(popupContent)
+                .bindTooltip(popupContent, { permanent: false, direction: 'top' });
+
+              // Remove previous click event
+              markerData.marker.off('click');
+
+              // Add click event to the marker
+              markerData.marker.on('click', function() {
+                // Ensure both checkboxes are checked when a marker is clicked
+                document.getElementById('showIgates').checked = true;
+                document.getElementById('showTrackers').checked = true;
+
+                if (markerData.type === 'iGate') {
+                  document.getElementById('rxFilter').value = tx_callsign;
+                } else {
+                  document.getElementById('txFilter').value = tx_callsign;
+                }
+                userInteracted = false; // Reset user interaction flag
+                applyFilters();
+              });
+
+              // Apply ripple effect
+              if (type === 'Tracker') { // Apply ripple only to Trackers
+                var iconElement = markerData.marker.getElement();
+                if (iconElement) {
+                  iconElement.classList.add('ripple-effect');
+                  setTimeout(function() {
+                    iconElement.classList.remove('ripple-effect');
+                  }, 1200); // Duration matches the animation duration
+                }
+              }
+
+              // Update markerData
+              markerData.rx_callsign = rx_callsign;
+              markerData.latitude = latitude;
+              markerData.longitude = longitude;
+              markerData.timestamp = timestamp;
+              markerData.signal_quality = signal_quality;
+              markerData.battery = battery;
+              markerData.comment = comment;
+            } else {
+              // Create a new marker if it doesn't exist
+              var labelClass = isHighlighted ? 'highlight' : 'normal';
+
+              var iconHtml = `
+                <div class="marker-content">
+                  <div class="tx-label ${labelClass}">${tx_callsign}</div>
+                </div>
+              `;
+
+              var txLabelIcon = L.divIcon({
+                html: iconHtml,
+                iconSize: [1, 1],
+                iconAnchor: [0, 0],
+                className: ''
+              });
+
+              var marker = L.marker([latitude, longitude], { icon: txLabelIcon }).addTo(map)
+                .bindPopup(popupContent)
+                .bindTooltip(popupContent, { permanent: false, direction: 'top' });
+
+              // Add click event to the marker
+              marker.on('click', function() {
+                // Ensure both checkboxes are checked when a marker is clicked
+                document.getElementById('showIgates').checked = true;
+                document.getElementById('showTrackers').checked = true;
+
+                if (type === 'iGate') {
+                  document.getElementById('rxFilter').value = tx_callsign;
+                } else {
+                  document.getElementById('txFilter').value = tx_callsign;
+                }
+                userInteracted = false; // Reset user interaction flag
+                applyFilters();
+              });
+
+              // Apply ripple effect
+              var iconElement = marker.getElement();
+              if (iconElement) {
+                iconElement.classList.add('ripple-effect');
+                setTimeout(function() {
+                  iconElement.classList.remove('ripple-effect');
+                }, 1000);
+              }
+
+              // Store marker and highlight state
+              markers[tx_callsign] = {
+                marker: marker,
+                rx_callsign: rx_callsign,
+                tx_callsign: tx_callsign,
+                latitude: latitude,
+                longitude: longitude,
+                timestamp: timestamp, // Store timestamp to filter based on age
+                signal_quality: signal_quality, // Store signal_quality for polyline color
+                highlighted: isHighlighted, // Store highlight state
+                type: type // Add type of marker
+              };
+            }
+
+            applyFilters();
+          }
+
+        } catch (e) {
+          console.error("Error processing MQTT message:", e);
+        }
+      };
+
+      // Update the dropdowns for RX and TX callsigns without resetting selections
+      function updateDropdowns() {
+        var rxFilter = document.getElementById('rxFilter');
+        var txFilter = document.getElementById('txFilter');
+
+        var selectedRx = rxFilter.value;
+        var selectedTx = txFilter.value;
+
+        // Add new RX callsigns
+        rxCalls.forEach(rx => {
+          if (!Array.from(rxFilter.options).some(option => option.value === rx)) {
+            var option = document.createElement('option');
+            option.value = rx;
+            option.text = rx;
+            rxFilter.appendChild(option);
+          }
+        });
+
+        // Add new TX callsigns
+        txCalls.forEach(tx => {
+          // Only add TX callsigns that are not in RX calls
+          if (!Array.from(txFilter.options).some(option => option.value === tx) && !rxCalls.has(tx)) {
+            var option = document.createElement('option');
+            option.value = tx;
+            option.text = tx;
+            txFilter.appendChild(option);
+          }
+        });
+
+        // Alphabetize the options in both dropdowns
+        sortDropdownOptions(rxFilter);
+        sortDropdownOptions(txFilter);
+
+        // Restore the previous selections
+        rxFilter.value = selectedRx;
+        txFilter.value = selectedTx;
+      }
+
+      // Function to alphabetize dropdown options
+      function sortDropdownOptions(dropdown) {
+        var options = Array.from(dropdown.options).slice(1); // Exclude the "All" option
+        options.sort((a, b) => a.text.localeCompare(b.text));
+
+        // Remove existing options
+        dropdown.innerHTML = dropdown.options[0].outerHTML; // Keep the "All" option
+
+        // Re-add the sorted options
+        options.forEach(option => dropdown.add(option));
+      }
+
+      // Apply filters based on dropdown values and fitBounds
+      function applyFilters() {
+        var selectedRx = document.getElementById('rxFilter').value;
+        var selectedTx = document.getElementById('txFilter').value;
+        var selectedDistance = document.getElementById('distanceFilter').value;
+        var selectedAge = document.getElementById('ageFilter').value; // Get selected age limit
+
+        var showIgates = document.getElementById('showIgates').checked;
+        var showTrackers = document.getElementById('showTrackers').checked;
+
+        var bounds = L.latLngBounds([]);
+        var currentTime = new Date();
+
+        // Keep track of visible markers to control polylines
+        var visibleMarkers = {};
+
+        // Collect stations heard by the selected iGate
+        var stationsHeardByIgate = new Set();
+        // Collect iGates that have heard the selected tracker
+        var igatesHeardTracker = new Set();
+
+        if (selectedRx && !selectedTx) {
+          Object.values(markers).forEach(markerData => {
+            if (markerData.rx_callsign === selectedRx) {
+              stationsHeardByIgate.add(markerData.tx_callsign);
+            }
+          });
+        }
+
+        if (selectedTx && !selectedRx) {
+          Object.values(markers).forEach(markerData => {
+            if (markerData.tx_callsign === selectedTx) {
+              igatesHeardTracker.add(markerData.rx_callsign);
+            }
+          });
+        }
+
+        // Ensure that the selected iGate marker is always added to the map if it exists
+        if (selectedRx && markers[selectedRx]) {
+          var markerData = markers[selectedRx];
+          var marker = markerData.marker;
+
+          var markerTime = new Date(markerData.timestamp);
+          var timeDifference = (currentTime - markerTime) / (1000 * 60);
+
+          var matchAge = selectedAge === "unlimited" || timeDifference <= parseFloat(selectedAge);
+          var matchDistance = true;
+          if (selectedDistance && userLocation) {
+            var markerDistance = calculateDistance(userLocation.latitude, userLocation.longitude, markerData.latitude, markerData.longitude);
+            matchDistance = markerDistance <= parseFloat(selectedDistance);
+          }
+
+          if (showIgates && matchAge && matchDistance) {
+            marker.addTo(map);
+            bounds.extend(marker.getLatLng());
+            visibleMarkers[selectedRx] = true;
+          } else {
+            map.removeLayer(marker);
+          }
+        }
+
+        // Ensure that the selected Tracker marker is always added to the map if it exists
+        if (selectedTx && markers[selectedTx]) {
+          var markerData = markers[selectedTx];
+          var marker = markerData.marker;
+
+          var markerTime = new Date(markerData.timestamp);
+          var timeDifference = (currentTime - markerTime) / (1000 * 60);
+
+          var matchAge = selectedAge === "unlimited" || timeDifference <= parseFloat(selectedAge);
+          var matchDistance = true;
+          if (selectedDistance && userLocation) {
+            var markerDistance = calculateDistance(userLocation.latitude, userLocation.longitude, markerData.latitude, markerData.longitude);
+            matchDistance = markerDistance <= parseFloat(selectedDistance);
+          }
+
+          if (showTrackers && matchAge && matchDistance) {
+            marker.addTo(map);
+            bounds.extend(marker.getLatLng());
+            visibleMarkers[selectedTx] = true;
+          } else {
+            map.removeLayer(marker);
+          }
+        }
+
+        Object.values(markers).forEach(markerData => {
+          var marker = markerData.marker;
+          var rx_callsign = markerData.rx_callsign;
+          var tx_callsign = markerData.tx_callsign;
+          var latitude = markerData.latitude;
+          var longitude = markerData.longitude;
+          var timestamp = markerData.timestamp;
+          var type = markerData.type;
+
+          // Skip the selected iGate and Tracker markers since we already handled them
+          if (tx_callsign === selectedRx || tx_callsign === selectedTx) {
+            return;
+          }
+
+          var markerTime = new Date(timestamp);
+          var timeDifference = (currentTime - markerTime) / (1000 * 60);
+
+          var matchAge = selectedAge === "unlimited" || timeDifference <= parseFloat(selectedAge);
+          var matchDistance = true;
+          if (selectedDistance && userLocation) {
+            var markerDistance = calculateDistance(userLocation.latitude, userLocation.longitude, latitude, longitude);
+            matchDistance = markerDistance <= parseFloat(selectedDistance);
+          }
+
+          var showMarker = false;
+
+          if (selectedRx && !selectedTx) {
+            // Specific iGate is selected
+            if (stationsHeardByIgate.has(tx_callsign)) {
+              // This station has been heard by the selected iGate
+              if (type === 'iGate' && showIgates) {
+                showMarker = true;
+              } else if (type === 'Tracker' && showTrackers) {
+                showMarker = true;
+              }
+            }
+          } else if (selectedTx && !selectedRx) {
+            // Specific Tracker is selected
+            if (igatesHeardTracker.has(tx_callsign) && type === 'iGate' && showIgates) {
+              // Show iGates that have heard the Tracker
+              showMarker = true;
+            }
+          } else if (selectedRx && selectedTx) {
+            // Both iGate and Tracker are selected
+            if (rx_callsign === selectedRx && tx_callsign === selectedTx) {
+              if ((type === 'iGate' && showIgates) || (type === 'Tracker' && showTrackers)) {
+                showMarker = true;
+              }
+            }
+          } else {
+            // No specific iGate or Tracker is selected
+            if ((type === 'iGate' && showIgates) || (type === 'Tracker' && showTrackers)) {
+              showMarker = true;
+            }
+          }
+
+          if (showMarker && matchAge && matchDistance) {
+            marker.addTo(map);
+            bounds.extend(marker.getLatLng());
+            visibleMarkers[tx_callsign] = true;
+            visibleMarkers[rx_callsign] = true;
+          } else {
+            map.removeLayer(marker);
+          }
+        });
+
+        // Ensure polylines are drawn only if both the tracker and iGate are visible
+        drawPolylines(visibleMarkers);
+
+        // Modify fitBounds behavior based on user interaction and filter selection
+        if (!userInteracted || selectedRx || selectedTx || selectedDistance || selectedAge !== "unlimited") {
+          if (bounds.isValid()) {
+            map.fitBounds(bounds, { padding: [50, 50] });
+          }
+        }
+      }
+
+      // Function to handle drawing of polylines between visible tracker and iGate markers
+      function drawPolylines(visibleMarkers) {
+        var showIgates = document.getElementById('showIgates').checked;
+        var showTrackers = document.getElementById('showTrackers').checked;
+
+        // Clear any existing polylines
+        Object.values(polylines).forEach(polylineGroup => {
+          map.removeLayer(polylineGroup);
+        });
+        polylines = {};
+
+        // Only draw polylines if both showIgates and showTrackers are checked
+        if (showIgates && showTrackers) {
+          Object.values(markers).forEach(markerData => {
+            var tx_callsign = markerData.tx_callsign;
+            var rx_callsign = markerData.rx_callsign;
+            var signal_quality = markerData.signal_quality || 0;
+
+            // Only proceed if both markers exist
+            if (markers[tx_callsign] && markers[rx_callsign]) {
+              // Only add a line if both the tracker and iGate are visible
+              if (visibleMarkers[tx_callsign] && visibleMarkers[rx_callsign]) {
+                var txMarker = markers[tx_callsign].marker.getLatLng();
+                var rxMarker = markers[rx_callsign].marker.getLatLng();
+
+                // Ensure we don't draw lines between two identical callsigns
+                if (tx_callsign !== rx_callsign) {
+                  // Create a unique key for the polyline
+                  var polylineKey = tx_callsign + '-' + rx_callsign;
+
+                  if (!polylines[polylineKey]) {
+                    var polyline = L.polyline([txMarker, rxMarker], {
+                      color: getColor(signal_quality),
+                      weight: 3
+                    });
+
+                    // Create circle markers at the ends of the polyline
+                    var startCircle = L.circleMarker(txMarker, {
+                      radius: 4,
+                      color: 'red',
+                      fillColor: 'red',
+                      fillOpacity: 1
+                    });
+
+                    var endCircle = L.circleMarker(rxMarker, {
+                      radius: 4,
+                      color: 'red',
+                      fillColor: 'red',
+                      fillOpacity: 1
+                    });
+
+                    // Create a layer group containing the polyline and the circles
+                    var polylineGroup = L.layerGroup([polyline, startCircle, endCircle]).addTo(map);
+
+                    polylines[polylineKey] = polylineGroup;
+                  }
+                }
+              }
+            }
+          });
+        }
+      }
+
+      // Get the user's current location using the browser's built-in geolocation
+      function getUserLocation() {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(function(position) {
+            userLocation = {
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude
+            };
+            console.log("User location obtained: ", userLocation);
+
+            if (userMarker) {
+              userMarker.setLatLng([userLocation.latitude, userLocation.longitude]);
+            } else {
+              // Use the default Leaflet marker icon for the user's location
+              userMarker = L.marker([userLocation.latitude, userLocation.longitude]).addTo(map)
+                .bindPopup("You");
+            }
+
+            applyFilters();
+
+          }, function(error) {
+            console.error("Geolocation error: " + error.message);
+          });
+        } else {
+          console.error("Geolocation is not supported by this browser.");
+        }
+      }
+
+      // Haversine formula to calculate the distance between two points in km
+      function calculateDistance(lat1, lon1, lat2, lon2) {
+        var R = 6371; // Radius of the Earth in km
+        var dLat = (lat2 - lat1) * Math.PI / 180;
+        var dLon = (lon2 - lon1) * Math.PI / 180;
+        var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return R * c;
+      }
+
+      // Attach event listeners for dropdown changes
+      document.getElementById('rxFilter').addEventListener('change', function() {
+        document.getElementById('txFilter').value = ""; // Reset tracker filter
+        userInteracted = false; // Reset user interaction flag
+        applyFilters();
+      });
+      document.getElementById('txFilter').addEventListener('change', function() {
+        document.getElementById('rxFilter').value = ""; // Reset iGate filter
+        userInteracted = false; // Reset user interaction flag
+        applyFilters();
+      });
+      document.getElementById('distanceFilter').addEventListener('change', function() {
+        if (document.getElementById('distanceFilter').value) {
+          getUserLocation();
+        } else {
+          applyFilters();
+        }
+        userInteracted = false; // Reset user interaction flag
+      });
+      document.getElementById('ageFilter').addEventListener('change', function() {
+        userInteracted = false; // Reset user interaction flag
+        applyFilters();
+      }); // Add listener for age filter
+
+      // Add event listeners for the new checkboxes
+      document.getElementById('showIgates').addEventListener('change', function() {
+        userInteracted = false; // Reset user interaction flag
+        applyFilters();
+      });
+      document.getElementById('showTrackers').addEventListener('change', function() {
+        userInteracted = false; // Reset user interaction flag
+        applyFilters();
+      });
+
+      // Function to copy the current URL to the clipboard
+      window.copyLink = function() {
+        var dummy = document.createElement('input');
+        var url = window.location.href;
+        document.body.appendChild(dummy);
+        dummy.value = url;
+        dummy.select();
+        document.execCommand('copy');
+        document.body.removeChild(dummy);
+        var flashMessage = document.getElementById('flash-message');
+        flashMessage.style.display = 'inline';
+        setTimeout(function() {
+          flashMessage.style.display = 'none';
+        }, 2000);
+      };
+    });
+  </script>
+</body>
+</html>
+

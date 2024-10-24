@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LoRa APRS Real Time Plots</title>
+    <script src="https://cdn.jsdelivr.net/npm/mqtt/dist/mqtt.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            /* Removed justify-content: center to allow content to flow naturally */
+            min-height: 100vh;
+            position: relative; /* To position status-container absolutely */
+            background-color: #f5f5f5; /* Light background for better contrast */
+        }
+
+        canvas {
+            max-width: 90vw;
+            max-height: 40vh;
+            width: 100%;
+            margin: 10px 0;
+            background: white;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .input-container {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        input, select, button {
+            margin-right: 10px;
+            padding: 8px 12px;
+            font-size: 1rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        input:focus, select:focus {
+            border-color: #007bff;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        .status-container {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 0.9rem;
+            font-family: Arial, sans-serif;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 8px 12px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .status-connected {
+            color: #28a745;
+        }
+
+        .status-disconnected {
+            color: #ff0000;
+        }
+
+        .packet-info {
+            font-size: 1rem;
+            margin-top: 5px;
+            font-family: Arial, sans-serif;
+            color: #333;
+        }
+
+        input#callsign {
+            width: 12ch;
+        }
+
+        /* Leaflet map container */
+        #mapContainer {
+            position: absolute;
+            top: 10px; /* Changed from 60px to 10px */
+            right: 10px;
+            width: 300px;
+            height: 300px;
+            z-index: 1000;
+            border: 1px solid #ccc;
+            display: none; /* Start hidden */
+            background: white;
+            border-radius: 5px;
+            overflow: hidden;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        /* Show/Hide map button */
+        #toggleMapButton {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1001;
+            padding: 8px 12px;
+            font-size: 0.9rem;
+            border: none;
+            background-color: #007bff;
+            color: white;
+            border-radius: 5px;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            transition: background-color 0.3s;
+        }
+
+        #toggleMapButton:hover {
+            background-color: #0056b3;
+        }
+
+        /* Download CSV button */
+        #downloadCsvButton {
+            /* Removed absolute positioning */
+            padding: 8px 16px;
+            font-size: 1rem;
+            border: none;
+            background-color: #28a745;
+            color: white;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 20px; /* Added margin for spacing */
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            transition: background-color 0.3s;
+        }
+
+        #downloadCsvButton:hover {
+            background-color: #1e7e34;
+        }
+
+        /* Blue dot style for map polyline points */
+        .blue-dot {
+            background-color: blue;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            #mapContainer {
+                width: 250px;
+                height: 250px;
+            }
+
+            #toggleMapButton, #downloadCsvButton {
+                font-size: 0.8rem;
+                padding: 6px 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Status for MQTT connection and time since last message -->
+    <div class="status-container">
+        <div id="mqttStatus" class="status-disconnected">Disconnected</div>
+        <div id="lastSeen">Seen: -- ago</div>
+    </div>
+
+    <!-- Input for Callsign -->
+    <div class="input-container">
+        <input type="text" id="callsign" placeholder="Callsign" maxlength="10" />
+        <button onclick="subscribeToTopic()">Track</button>
+    </div>
+
+    <!-- Dropdown for iGate selection -->
+    <div class="input-container">
+        <select id="igateDropdown" onchange="handleIgateChange()">
+            <option value="all">All iGates</option>
+        </select>
+    </div>
+
+    <!-- Packet Info Display -->
+    <div class="packet-info" id="packetInfo">No packets received yet</div>
+
+    <!-- Charts -->
+    <canvas id="rssiSNRChart"></canvas>
+    <canvas id="distanceElevationChart"></canvas>
+
+    <!-- Download CSV button placed underneath the last graph -->
+    <button id="downloadCsvButton" onclick="downloadCSV()">Download CSV</button>
+
+    <!-- Map container for LeafletJS -->
+    <div id="mapContainer"></div>
+    <button id="toggleMapButton" onclick="toggleMap()">Map</button>
+
+    <script>
+        // Initialize variables
+        let client;
+        let chart;
+        let distanceElevationChart;
+        let maxDataPoints = 20;
+        let rssiData = [];
+        let snrData = [];
+        let distanceData = [];
+        let elevationData = [];
+        let labels = [];
+        let firstDataPointReceived = false;
+        let currentCallsign = '';
+        // Make waitingMessage global
+        window.waitingMessage = 'Enter callsign to start';
+        let lastMessageTime = 0;
+        let igateCallsigns = new Set(); // Store iGate callsigns
+        let lockedIgate = ''; // Track the locked iGate
+        let receivedPackets = {}; // Store multiple iGate data for the same packet
+        let map, polyline, marker;
+        let mapVisible = false;
+        let mapPoints = [];
+        let circleMarkersGroup; // LayerGroup for circle markers
+
+        const mqttStatusElement = document.getElementById('mqttStatus');
+        const lastSeenElement = document.getElementById('lastSeen');
+        const igateDropdown = document.getElementById('igateDropdown');
+        const packetInfoElement = document.getElementById('packetInfo');
+        const mapContainer = document.getElementById('mapContainer');
+        const toggleMapButton = document.getElementById('toggleMapButton');
+        const downloadCsvButton = document.getElementById('downloadCsvButton');
+
+        // Select the 'Track' button
+        const trackButton = document.querySelector('.input-container button');
+
+        // Change the originalTrackButtonColor to red when not connected
+        const originalTrackButtonColor = 'red'; // Modified from '#007bff' to 'red'
+
+        // Chart.js plugin to display a message when no data is available
+        const noDataMessagePlugin = {
+            id: 'noDataMessagePlugin',
+            beforeDraw: function(chart) {
+                const datasetsEmpty = chart.data.datasets.every(dataset => dataset.data.length === 0);
+                const labelsEmpty = chart.data.labels.length === 0;
+
+                if (datasetsEmpty && labelsEmpty) {
+                    const ctx = chart.ctx;
+                    const width = chart.width;
+                    const height = chart.height;
+
+                    ctx.save();
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.font = '20px Arial';
+                    
+                    // Draw a semi-transparent rectangle as background for better readability
+                    const message = window.waitingMessage;
+                    const textMetrics = ctx.measureText(message);
+                    const padding = 10;
+                    const rectWidth = textMetrics.width + padding * 2;
+                    const rectHeight = 30; // Adjust as needed
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                    ctx.fillRect((width - rectWidth) / 2, (height - rectHeight) / 2 - 10, rectWidth, rectHeight);
+
+                    // Draw the text message
+                    ctx.fillStyle = 'black';
+                    ctx.fillText(message, width / 2, height / 2);
+
+                    ctx.restore();
+
+                    console.log('Displaying no data message:', message);
+                }
+            }
+        };
+
+        // Register the plugin globally
+        Chart.register(noDataMessagePlugin);
+
+        // Function to convert UTC timestamp to local 24-hour time (HH:mm:ss)
+        function formatToLocalTime(utcTimestamp) {
+            const date = new Date(utcTimestamp);
+            return date.toLocaleTimeString('en-GB', { hour12: false });
+        }
+
+        // Function to toggle map visibility
+        function toggleMap() {
+            mapVisible = !mapVisible;
+            mapContainer.style.display = mapVisible ? 'block' : 'none';
+            toggleMapButton.textContent = mapVisible ? 'Hide' : 'Map';
+
+            if (mapVisible && map) {
+                map.invalidateSize(); // Fix any map size issues when shown
+            }
+        }
+
+        // Function to initialize the map
+        function initMap() {
+            map = L.map('mapContainer').setView([0, 0], 2); // Start with default global view
+
+            // Add OpenStreetMap tiles
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+
+            // Initialize an empty polyline for the map
+            polyline = L.polyline([], { color: 'blue' }).addTo(map);
+
+            // Initialize the LayerGroup for circle markers
+            circleMarkersGroup = L.layerGroup().addTo(map);
+        }
+
+        // Function to update the map with the latest packet data
+        function updateMap() {
+            mapPoints = []; // Reset mapPoints for filtering
+            let latestLatLng = null; // To store the most recent point for the marker
+
+            // Clear existing circle markers
+            circleMarkersGroup.clearLayers();
+
+            // Filter map points based on locked iGate if necessary
+            for (const key in receivedPackets) {
+                if (receivedPackets.hasOwnProperty(key)) {
+                    const packetArray = receivedPackets[key];
+                    packetArray.forEach(packet => {
+                        if (!lockedIgate || packet.igateCallsign === lockedIgate) {
+                            const newLatLng = [packet.latitude, packet.longitude];
+                            mapPoints.push(newLatLng);
+
+                            // Store the most recent packet for the marker
+                            latestLatLng = newLatLng;
+
+                            // Add a small blue dot at each point on the polyline
+                            L.circleMarker(newLatLng, {
+                                radius: 4,
+                                color: 'blue',
+                                fillColor: 'blue',
+                                fillOpacity: 1
+                            }).addTo(circleMarkersGroup);
+                        }
+                    });
+                }
+            }
+
+            // Set polyline data and fit map bounds to points
+            polyline.setLatLngs(mapPoints);
+            if (mapPoints.length > 0) {
+                const bounds = L.latLngBounds(mapPoints);
+                map.fitBounds(bounds, { padding: [50, 50] }); // Add padding for better visibility
+            }
+
+            // Add or move the marker to the most recent point
+            if (latestLatLng) {
+                if (marker) {
+                    // Move the marker if it already exists
+                    marker.setLatLng(latestLatLng);
+                } else {
+                    // Create a new marker if it doesn't exist
+                    marker = L.marker(latestLatLng).addTo(map);
+                }
+            }
+        }
+
+        // Function to clear the map when a new track is started
+        function clearMap() {
+            // Clear the polyline and map points
+            mapPoints = [];
+            polyline.setLatLngs(mapPoints); // Clear the polyline
+
+            // Clear all circle markers
+            if (circleMarkersGroup) {
+                circleMarkersGroup.clearLayers();
+            }
+
+            // Remove any existing marker
+            if (marker) {
+                map.removeLayer(marker); // Remove the existing marker
+                marker = null; // Reset the marker reference
+            }
+
+            // Reset the map view (optional: back to default global view)
+            map.setView([0, 0], 2); // Reset map to default view (world view)
+        }
+
+        // Function to download the data as CSV
+        function downloadCSV() {
+            // Check if there's a callsign
+            if (!currentCallsign) {
+                alert("Please enter a callsign first.");
+                return;
+            }
+
+            // Collect the data for CSV
+            let csvContent = "data:text/csv;charset=utf-8,";
+            csvContent += "Timestamp,Tracker,iGate,RSSI (dBm),SNR (dB),Elevation (m),Distance (km)\n"; // CSV header
+
+            // Loop through received packets to extract relevant data from all iGates
+            for (const key in receivedPackets) {
+                if (receivedPackets.hasOwnProperty(key)) {
+                    const packetArray = receivedPackets[key];
+                    packetArray.forEach(packet => {
+                        const timestamp = new Date(packet.timestamp).toISOString(); // Format timestamp as ISO
+                        const callsign = currentCallsign; // The callsign being tracked
+                        const igateCallsign = packet.igateCallsign;
+                        const rssi = packet.rssi !== undefined ? packet.rssi : ''; // Handle undefined cases
+                        const snr = packet.snr !== undefined ? packet.snr : '';
+                        const elevation = packet.elevation !== undefined ? packet.elevation : '';
+                        const distance = packet.distance !== undefined ? packet.distance : '';
+
+                        // Add the row to the CSV
+                        csvContent += `${timestamp},${callsign},${igateCallsign},${rssi},${snr},${elevation},${distance}\n`;
+                    });
+                }
+            }
+
+            // Create a download link and trigger it, using the callsign in the filename
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", `${currentCallsign}.csv`);
+            document.body.appendChild(link); // Required for Firefox
+
+            link.click();
+
+            // Clean up by removing the link
+            document.body.removeChild(link);
+        }
+
+        // Function to update the connection status
+        function updateConnectionStatus(isConnected) {
+            mqttStatusElement.textContent = isConnected ? 'Connected' : 'Disconnected';
+            mqttStatusElement.classList.toggle('status-connected', isConnected);
+            mqttStatusElement.classList.toggle('status-disconnected', !isConnected);
+
+            if (isConnected) {
+                // Change 'Track' button to green when connected
+                trackButton.style.backgroundColor = '#28a745';
+            } else {
+                // Revert 'Track' button to original color when disconnected
+                trackButton.style.backgroundColor = originalTrackButtonColor;
+            }
+        }
+
+        // Function to update the "time since last message"
+        function updateLastSeen() {
+            if (lastMessageTime === 0) {
+                lastSeenElement.textContent = "Seen: -- ago";
+                return;
+            }
+            const now = Date.now();
+            const elapsed = Math.floor((now - lastMessageTime) / 1000); // Elapsed time in seconds
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+            lastSeenElement.textContent = `Seen: ${minutes > 0 ? minutes + 'm ' : ''}${seconds}s ago`;
+        }
+
+        // Call updateLastSeen every second to refresh the display
+        setInterval(updateLastSeen, 1000);
+
+        // Function to add new iGate to dropdown if not already there
+        function addIgateToDropdown(igate) {
+            if (!igateCallsigns.has(igate)) {
+                igateCallsigns.add(igate);
+                const option = document.createElement('option');
+                option.value = igate;
+                option.text = igate;
+                igateDropdown.add(option);
+            }
+        }
+
+        // Handle iGate selection from dropdown
+        function handleIgateChange() {
+            lockedIgate = igateDropdown.value === 'all' ? '' : igateDropdown.value;
+            console.log(lockedIgate ? `Locked to iGate: ${lockedIgate}` : 'Displaying data from all iGates');
+            updateCharts();
+            updateMap();
+        }
+
+        // Initialize the RSSI and SNR Chart
+        function initChart() {
+            const ctx = document.getElementById('rssiSNRChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'RSSI (dBm)',
+                            data: rssiData,
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            borderWidth: 2,
+                            fill: false,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'SNR (dB)',
+                            data: snrData,
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            borderWidth: 2,
+                            fill: false,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    scales: {
+                        x: {
+                            display: true,
+                            title: { display: false }
+                        },
+                        y: {
+                            id: 'y',
+                            type: 'linear',
+                            position: 'left',
+                            title: { display: true, text: 'RSSI (dBm)' },
+                            ticks: { beginAtZero: true }
+                        },
+                        y1: {
+                            id: 'y1',
+                            type: 'linear',
+                            position: 'right',
+                            title: { display: true, text: 'SNR (dB)' },
+                            ticks: { beginAtZero: true },
+                            grid: { drawOnChartArea: false }
+                        }
+                    },
+                    plugins: {
+                        noDataMessagePlugin: true // Enable the plugin
+                    }
+                }
+            });
+        }
+
+        // Initialize the Distance and Elevation Chart
+        function initDistanceElevationChart() {
+            const ctx = document.getElementById('distanceElevationChart').getContext('2d');
+            distanceElevationChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Elevation (m)',
+                            data: elevationData,
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            borderWidth: 2,
+                            fill: false,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Distance (km)',
+                            data: distanceData,
+                            borderColor: 'rgba(153, 102, 255, 1)',
+                            borderWidth: 2,
+                            fill: false,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    scales: {
+                        x: { display: true, title: { display: false } },
+                        y: {
+                            id: 'y',
+                            type: 'linear',
+                            position: 'left',
+                            title: { display: true, text: 'Elevation (m)' },
+                            ticks: { beginAtZero: true }
+                        },
+                        y1: {
+                            id: 'y1',
+                            type: 'linear',
+                            position: 'right',
+                            title: { display: true, text: 'Distance (km)' },
+                            ticks: { beginAtZero: true },
+                            grid: { drawOnChartArea: false }
+                        }
+                    },
+                    plugins: {
+                        noDataMessagePlugin: true // Enable the plugin
+                    }
+                }
+            });
+        }
+
+        // Clear all charts, packets, dropdown, and reset all relevant UI components
+        function resetData() {
+            // Reset chart data
+            rssiData.length = 0;
+            snrData.length = 0;
+            distanceData.length = 0;
+            elevationData.length = 0;
+            labels.length = 0;
+
+            chart.update();
+            distanceElevationChart.update();
+
+            // Clear received packets
+            receivedPackets = {};
+
+            // Reset last seen message and packet info
+            lastMessageTime = 0;
+            lastSeenElement.textContent = 'Seen: -- ago';
+            packetInfoElement.textContent = 'No packets received yet';
+
+            // Clear the iGate dropdown and reset to default option
+            igateCallsigns.clear();
+            igateDropdown.innerHTML = '<option value="all">All iGates</option>';
+
+            // Clear the map
+            clearMap();
+        }
+
+        // Function to update charts with new data (only highest SNR value for each timestamp and only from the locked iGate if applicable)
+        function updateCharts() {
+            // Extract only the data with the highest SNR for each timestamp
+            const uniquePackets = {};
+
+            for (const key in receivedPackets) {
+                if (receivedPackets.hasOwnProperty(key)) {
+                    const packetArray = receivedPackets[key];
+                    packetArray.forEach(packet => {
+                        if (!lockedIgate || packet.igateCallsign === lockedIgate) {
+                            if (!uniquePackets[packet.timestamp] || packet.snr > uniquePackets[packet.timestamp].snr) {
+                                uniquePackets[packet.timestamp] = packet;
+                            }
+                        }
+                    });
+                }
+            }
+
+            // Clear previous chart data
+            rssiData.length = 0;
+            snrData.length = 0;
+            distanceData.length = 0;
+            elevationData.length = 0;
+            labels.length = 0;
+
+            // Add the unique, highest SNR packets to the chart
+            Object.values(uniquePackets).forEach(packet => {
+                const localTime = formatToLocalTime(packet.timestamp);
+                labels.push(localTime);
+                rssiData.push(packet.rssi);
+                snrData.push(packet.snr);
+                distanceData.push(packet.distance);
+                elevationData.push(packet.elevation);
+            });
+
+            // Limit the number of data points to maxDataPoints
+            if (labels.length > maxDataPoints) {
+                labels = labels.slice(-maxDataPoints);
+                rssiData = rssiData.slice(-maxDataPoints);
+                snrData = snrData.slice(-maxDataPoints);
+                distanceData = distanceData.slice(-maxDataPoints);
+                elevationData = elevationData.slice(-maxDataPoints);
+            }
+
+            // Update the charts
+            chart.update();
+            distanceElevationChart.update();
+        }
+
+        // Subscribe to MQTT topic
+        function subscribeToTopic() {
+            // Reset data whenever subscribe is clicked
+            resetData();
+
+            const callsignInput = document.getElementById('callsign').value.trim();
+            if (!callsignInput) {
+                // Update the global waitingMessage
+                window.waitingMessage = 'Enter callsign to start';
+                chart.update();
+                distanceElevationChart.update();
+                return;
+            }
+
+            currentCallsign = callsignInput.toUpperCase();
+            // Update the global waitingMessage
+            window.waitingMessage = `Waiting for first packet from ${currentCallsign}`;
+            chart.update();
+            distanceElevationChart.update();
+
+            const topic = `lora_aprs/+/` + currentCallsign + `/json_message`;
+
+            // If already connected, unsubscribe from the previous topic
+            if (client && client.connected) {
+                client.end();
+            }
+
+            // Connect to MQTT broker
+            client = mqtt.connect('wss://hydros.link9.net:8183');
+
+            client.on('connect', function () {
+                updateConnectionStatus(true);
+                client.subscribe(topic, function (err) {
+                    if (!err) {
+                        console.log('Subscribed to:', topic);
+                    } else {
+                        console.error('Subscription error:', err);
+                    }
+                });
+            });
+
+            // On receiving a message
+            client.on('message', function (topic, message) {
+                // **Update the lastMessageTime to the current time**
+                lastMessageTime = Date.now();
+
+                // Extract iGate callsign from the topic
+                const topicParts = topic.split('/');
+                const igateCallsign = topicParts[1];
+
+                // Add iGate to dropdown if new
+                addIgateToDropdown(igateCallsign);
+
+                const data = JSON.parse(message.toString());
+                const timestamp = data.timestamp;
+                const latitude = data.latitude;
+                const longitude = data.longitude;
+                const rssi = data.signal_strength;
+                const snr = data.signal_quality;
+                const distance = data.distance;
+                const elevation = data.elevation;
+
+                // Check if this packet was received by other iGates
+                const packetKey = `${latitude},${longitude},${timestamp}`;
+
+                // If this packet already exists, append the new iGate data
+                if (receivedPackets[packetKey]) {
+                    receivedPackets[packetKey].push({ timestamp, latitude, longitude, rssi, snr, distance, elevation, igateCallsign });
+                } else {
+                    receivedPackets[packetKey] = [{ timestamp, latitude, longitude, rssi, snr, distance, elevation, igateCallsign }];
+                }
+
+                // Update the packet info
+                packetInfoElement.textContent = `Last seen by ${receivedPackets[packetKey].length} iGate(s)`;
+
+                // Update charts and map
+                updateCharts();
+                updateMap();
+            });
+
+            client.on('close', function () {
+                updateConnectionStatus(false);
+            });
+
+            client.on('error', function (error) {
+                console.error('MQTT Connection Error:', error);
+                updateConnectionStatus(false);
+            });
+        }
+
+        // Initialize both charts and the map on page load
+        window.onload = function () {
+            initChart();
+            initDistanceElevationChart();
+            initMap(); // Initialize the map
+            updateConnectionStatus(false); // Set initial status to disconnected
+
+            // **Start of Modification: Handle 'callsign' query parameter**
+            const urlParams = new URLSearchParams(window.location.search);
+            const callsign = urlParams.get('callsign');
+            if (callsign) {
+                document.getElementById('callsign').value = callsign;
+                subscribeToTopic();
+            }
+            // **End of Modification**
+        };
+    </script>
+
+</body>
+</html>
+
